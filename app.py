@@ -6,6 +6,9 @@ from typing import Any
 import streamlit as st
 from supabase import create_client, Client
 
+# -----------------------------------------------------------------------------
+# CONFIGURAÇÃO DE PÁGINA
+# -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="AgendUp - Sistema de Agendamentos",
     page_icon="⚡",
@@ -13,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Credenciais Supabase
+# Credenciais do Supabase
 SUPABASE_URL = "https://aphyrkigrszverlsainz.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFwaHlya2lncnN6dmVybHNhaW56Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxODMxODYsImV4cCI6MjEwMzc1OTE4Nn0.rsYGRDdyuoMpH-aFLAgG2NF5GJtOltEIu4ANLhaDa60"
 
@@ -23,7 +26,7 @@ def get_supabase_client() -> Client:
 
 supabase = get_supabase_client()
 
-# Estado de Sessão
+# Controle de Sessão
 if "auth_user" not in st.session_state:
     st.session_state["auth_user"] = None
 if "auth_role" not in st.session_state:
@@ -33,19 +36,28 @@ if "company_id" not in st.session_state:
 if "company_name" not in st.session_state:
     st.session_state["company_name"] = None
 
+# Mapeamento dinâmico de logins criados no painel Super Admin
 if "empresa_logins" not in st.session_state:
     st.session_state["empresa_logins"] = {}
 
-def get_table_data(table_name: str) -> list[dict[str, Any]]:
+# -----------------------------------------------------------------------------
+# FUNÇÕES DE BANCO DE DADOS (SUPABASE DIRETO)
+# -----------------------------------------------------------------------------
+def fetch_table(table_name: str) -> list[dict[str, Any]]:
     try:
         res = supabase.table(table_name).select("*").execute()
         return res.data or []
     except Exception as e:
-        st.error(f"Erro ao ler {table_name} no Supabase: {e}")
+        st.error(f"Erro ao consultar {table_name}: {e}")
         return []
 
-def safe_insert_establishment(nome: str, segmento: str, telefone: str) -> dict[str, Any] | None:
-    payload = {"nome": nome, "segmento": segmento, "telefone": telefone}
+def insert_estabelecimento(nome: str, categoria: str, chave_pix: str = "", tipo_chave_pix: str = "") -> dict[str, Any] | None:
+    payload = {
+        "nome": nome,
+        "categoria": categoria,
+        "chave_pix": chave_pix,
+        "tipo_chave_pix": tipo_chave_pix
+    }
     try:
         res = supabase.table("estabelecimentos").insert(payload).execute()
         if res.data:
@@ -54,12 +66,20 @@ def safe_insert_establishment(nome: str, segmento: str, telefone: str) -> dict[s
         st.error(f"Erro ao salvar estabelecimento no Supabase: {e}")
     return None
 
-def safe_insert_agendamento(payload: dict[str, Any]) -> bool:
+def insert_agendamento(payload: dict[str, Any]) -> bool:
     try:
         supabase.table("agendamentos").insert(payload).execute()
         return True
     except Exception as e:
-        st.error(f"Erro ao salvar agendamento no Supabase: {e}")
+        st.error(f"Erro ao registrar agendamento no Supabase: {e}")
+        return False
+
+def update_status_agendamento(agendamento_id: Any, novo_status: str) -> bool:
+    try:
+        supabase.table("agendamentos").update({"status": novo_status}).eq("id", agendamento_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao atualizar status no Supabase: {e}")
         return False
 
 def format_date(value: Any) -> str:
@@ -73,7 +93,9 @@ def format_date(value: Any) -> str:
             return value
     return str(value)
 
-# Barra Lateral
+# -----------------------------------------------------------------------------
+# BARRA LATERAL - NAVEGAÇÃO
+# -----------------------------------------------------------------------------
 st.sidebar.title("⚡ AgendUp")
 
 if not st.session_state["auth_user"]:
@@ -82,25 +104,26 @@ else:
     nav = "🔒 Acesso Restrito (Login)"
 
 # -----------------------------------------------------------------------------
-# 1. VISÃO DO CLIENTE (AGENDAMENTO ONLINE)
+# 1. TELA DE AGENDAMENTO (VISÃO CLIENTE PÚBLICO)
 # -----------------------------------------------------------------------------
 if nav == "🙋‍♂️ Cliente (Agendamentos)":
     st.title("📅 Agendamento Online")
-    st.write("Preencha as informações para realizar seu agendamento.")
+    st.write("Escolha o estabelecimento, preencha os dados e confirme o atendimento.")
 
-    empresas = get_table_data("estabelecimentos")
+    estabelecimentos = fetch_table("estabelecimentos")
 
-    if not empresas:
+    if not estabelecimentos:
         st.warning("Nenhum estabelecimento cadastrado no banco de dados até o momento.")
         st.stop()
 
-    empresa_dict = {f"{e.get('nome')} ({e.get('segmento', 'Geral')})": e for e in empresas}
-    empresa_selecionada_nome = st.selectbox("Selecione o Estabelecimento*", list(empresa_dict.keys()))
-    empresa_atual = empresa_dict[empresa_selecionada_nome]
+    # Mapeia nomes do dropdown para os registros reais do banco
+    emp_map = {f"{e.get('nome')} ({e.get('categoria', 'Geral')})": e for e in estabelecimentos}
+    emp_selecionada_label = st.selectbox("Selecione o Estabelecimento*", list(emp_map.keys()))
+    empresa_atual = emp_map[emp_selecionada_label]
 
     st.divider()
 
-    with st.form("form_agendamento_cliente", clear_on_submit=True):
+    with st.form("form_cliente_agendamento", clear_on_submit=True):
         st.subheader("1. Seus Dados")
         c1, c2 = st.columns(2)
         with c1:
@@ -117,17 +140,17 @@ if nav == "🙋‍♂️ Cliente (Agendamentos)":
 
         st.subheader("3. Forma de Pagamento")
         c_pagamento = st.radio(
-            "Selecione como deseja pagar:",
+            "Selecione a forma de pagamento:",
             ["PIX", "Dinheiro", "Maquineta (Cartão no Local)"],
             horizontal=True
         )
 
-        st.info(f"Empresa Selecionada: **{empresa_atual.get('nome')}**")
-        btn_agendar = st.form_submit_button("Confirmar Agendamento", type="primary", use_container_width=True)
+        st.info(f"Unidade selecionada: **{empresa_atual.get('nome')}**")
+        btn_confirmar = st.form_submit_button("Confirmar Agendamento", type="primary", use_container_width=True)
 
-        if btn_agendar:
+        if btn_confirmar:
             if not c_nome or not c_tel:
-                st.error("Por favor, preencha nome e telefone para contato.")
+                st.error("Por favor, preencha seu nome e telefone.")
             else:
                 payload = {
                     "cliente_nome": c_nome,
@@ -135,16 +158,17 @@ if nav == "🙋‍♂️ Cliente (Agendamentos)":
                     "data_hora": f"{c_data}T{c_hora}",
                     "estabelecimento_id": empresa_atual.get("id"),
                     "forma_pagamento": c_pagamento,
-                    "status": "Pendente (PIX)" if c_pagamento == "PIX" else "Aguardando"
+                    "status": "Aguardando Confirmação"
                 }
-                if safe_insert_agendamento(payload):
+                if insert_agendamento(payload):
                     st.success("🎉 Agendamento registrado com sucesso no Supabase!")
                     st.rerun()
 
 # -----------------------------------------------------------------------------
-# 2. ÁREA ADMINISTRATIVA
+# 2. ÁREA DE AUTENTICAÇÃO E PAINÉIS
 # -----------------------------------------------------------------------------
 else:
+    # SE NÃO ESTÁ CONECTADO -> LOGIN
     if not st.session_state["auth_user"]:
         st.title("🔒 Login Administrativo")
         
@@ -154,6 +178,7 @@ else:
             sub_login = st.form_submit_button("Acessar Painel", type="primary", use_container_width=True)
 
             if sub_login:
+                # Login do Super Admin
                 if email_input == "adm@gmail.com" and senha_input == "15022019Jpa":
                     st.session_state["auth_user"] = email_input
                     st.session_state["auth_role"] = "SUPER_ADMIN"
@@ -162,20 +187,22 @@ else:
                     st.success("Acesso liberado: Super Admin")
                     st.rerun()
 
+                # Login dos Clientes Empresa
                 elif email_input in st.session_state["empresa_logins"]:
-                    acc_info = st.session_state["empresa_logins"][email_input]
-                    if acc_info["senha"] == senha_input:
+                    acc = st.session_state["empresa_logins"][email_input]
+                    if acc["senha"] == senha_input:
                         st.session_state["auth_user"] = email_input
                         st.session_state["auth_role"] = "ADMIN_EMPRESA"
-                        st.session_state["company_id"] = acc_info["empresa_id"]
-                        st.session_state["company_name"] = acc_info["empresa_nome"]
-                        st.success(f"Bem-vindo, {acc_info['empresa_nome']}!")
+                        st.session_state["company_id"] = acc["empresa_id"]
+                        st.session_state["company_name"] = acc["empresa_nome"]
+                        st.success(f"Bem-vindo, {acc['empresa_nome']}!")
                         st.rerun()
                     else:
                         st.error("Senha incorreta.")
                 else:
                     st.error("E-mail ou senha não encontrados.")
 
+    # SE ESTÁ CONECTADO
     else:
         role = st.session_state["auth_role"]
         user_email = st.session_state["auth_user"]
@@ -183,109 +210,114 @@ else:
         st.sidebar.divider()
         st.sidebar.markdown(f"**Conectado:** `{user_email}`")
         st.sidebar.markdown(f"**Perfil:** `{role}`")
-        if st.sidebar.button("🚪 Sair"):
+        if st.sidebar.button("🚪 Sair do Sistema"):
             st.session_state["auth_user"] = None
             st.session_state["auth_role"] = None
             st.session_state["company_id"] = None
             st.session_state["company_name"] = None
             st.rerun()
 
-        # PAINEL SUPER ADMIN
+        # =====================================================================
+        # PAINEL 1: SUPER ADMIN
+        # =====================================================================
         if role == "SUPER_ADMIN":
-            st.title("👑 Painel do Super Admin")
-            st.write("Cadastre estabelecimentos e gerencie os acessos do sistema SaaS.")
+            st.title("👑 Painel Super Admin")
+            st.write("Gerencie os estabelecimentos cadastrados e crie credenciais para os donos.")
 
-            empresas = get_table_data("estabelecimentos")
-            agendamentos = get_table_data("agendamentos")
+            estabelecimentos = fetch_table("estabelecimentos")
+            agendamentos = fetch_table("agendamentos")
 
             m1, m2 = st.columns(2)
-            m1.metric("Empresas Cadastradas", len(empresas))
-            m2.metric("Total de Agendamentos", len(agendamentos))
+            m1.metric("Empresas no Supabase", len(estabelecimentos))
+            m2.metric("Agendamentos Globais", len(agendamentos))
 
             st.divider()
 
             st.subheader("➕ Cadastrar Novo Cliente Empresa")
             with st.form("form_cadastrar_empresa_saas", clear_on_submit=True):
-                col_e1, col_e2 = st.columns(2)
-                with col_e1:
+                col_1, col_2 = st.columns(2)
+                with col_1:
                     emp_nome = st.text_input("Nome da Empresa / Estabelecimento*")
-                    emp_segmento = st.selectbox("Segmento", ["Clínica Odontológica", "Barbearia", "Salão de Beleza", "Estúdio de Tatuagem", "Consultório", "Outro"])
-                    emp_telefone = st.text_input("Telefone / WhatsApp")
-                with col_e2:
-                    emp_email = st.text_input("E-mail de Login do Cliente Empresa*")
-                    emp_senha = st.text_input("Senha de Acesso do Cliente Empresa*", type="password")
+                    emp_categoria = st.selectbox("Categoria*", ["odontologia", "barbearia", "salao_beleza", "consultorio", "outros"])
+                    emp_chave_pix = st.text_input("Chave PIX (Opcional)")
+                    emp_tipo_pix = st.selectbox("Tipo da Chave PIX", ["telefone", "cnpj", "cpf", "email", "aleatoria"])
+                with col_2:
+                    emp_email = st.text_input("E-mail de Login da Empresa*")
+                    emp_senha = st.text_input("Senha de Acesso da Empresa*", type="password")
 
-                btn_salvar_empresa = st.form_submit_button("Cadastrar Empresa e Gerar Acesso", type="primary")
+                btn_salvar = st.form_submit_button("Cadastrar e Gerar Acesso", type="primary")
 
-                if btn_salvar_empresa:
+                if btn_salvar:
                     if not emp_nome or not emp_email or not emp_senha:
                         st.error("Preencha Nome, E-mail e Senha.")
                     else:
-                        created_emp = safe_insert_establishment(emp_nome, emp_segmento, emp_telefone)
-                        if created_emp:
-                            emp_id = created_emp.get("id")
+                        novo_est = insert_estabelecimento(
+                            nome=emp_nome,
+                            categoria=emp_categoria,
+                            chave_pix=emp_chave_pix,
+                            tipo_chave_pix=emp_tipo_pix
+                        )
+                        if novo_est:
+                            emp_id = novo_est.get("id")
+                            # Vincula no dicionário de logins
                             st.session_state["empresa_logins"][emp_email] = {
                                 "senha": emp_senha,
                                 "empresa_id": emp_id,
                                 "empresa_nome": emp_nome
                             }
                             st.success(f"Empresa '{emp_nome}' salva no Supabase (ID: {emp_id})!")
-                            st.info(f"Login Gerado: **{emp_email}** | Senha: **{emp_senha}**")
+                            st.info(f"Credenciais Criadas -> E-mail: **{emp_email}** | Senha: **{emp_senha}**")
                             st.rerun()
 
             st.divider()
-            st.subheader("📋 Lista de Empresas Cadastradas")
-            if empresas:
-                st.dataframe(empresas, use_container_width=True, hide_index=True)
+            st.subheader("📋 Lista de Estabelecimentos Salvos no Supabase")
+            if estabelecimentos:
+                st.dataframe(estabelecimentos, use_container_width=True, hide_index=True)
             else:
-                st.info("Nenhuma empresa encontrada no banco de dados.")
+                st.info("Nenhum estabelecimento encontrado no Supabase.")
 
-        # PAINEL ADMIN EMPRESA
+        # =====================================================================
+        # PAINEL 2: GESTOR DA EMPRESA
+        # =====================================================================
         elif role == "ADMIN_EMPRESA":
             company_id = st.session_state["company_id"]
             company_name = st.session_state["company_name"]
 
             st.title(f"🏢 Painel Gestor - {company_name}")
-            st.write("Acompanhe e gerencie os agendamentos do seu estabelecimento.")
+            st.write("Acompanhe e altere os agendamentos recebidos em tempo real.")
 
-            todos_agendamentos = get_table_data("agendamentos")
+            todos_agendamentos = fetch_table("agendamentos")
             
-            # Filtra agendamentos pertencentes ao ID desta empresa
+            # Filtra os agendamentos pertencentes ao ID do estabelecimento logado
             meus_agendamentos = [
                 a for a in todos_agendamentos 
                 if str(a.get("estabelecimento_id")) == str(company_id)
             ]
 
             if not meus_agendamentos:
-                st.info("Nenhum agendamento recebido até o momento para o seu estabelecimento.")
+                st.info("Nenhum agendamento recebido até o momento para esta empresa.")
             else:
                 for item in meus_agendamentos:
                     item_id = item.get("id")
-                    status = item.get("status", "Aguardando")
+                    status_atual = item.get("status", "Aguardando Confirmação")
                     
                     with st.container(border=True):
-                        c1, c2, c3 = st.columns([3, 2, 2], vertical_alignment="center")
-                        with c1:
+                        col1, col2, col3 = st.columns([3, 2, 2], vertical_alignment="center")
+                        with col1:
                             st.markdown(f"### {item.get('cliente_nome', 'Cliente')}")
-                            st.caption(f"📱 Contato: {item.get('telefone', 'Não informado')} | 📅 Data: {format_date(item.get('data_hora'))}")
-                        with c2:
+                            st.caption(f"📱 Telefone: {item.get('telefone', 'N/I')} | 📅 Data: {format_date(item.get('data_hora'))}")
+                        with col2:
                             st.write(f"**Pagamento:** {item.get('forma_pagamento', 'N/I')}")
-                            st.write(f"**Status:** `{status}`")
-                        with c3:
-                            col_btn1, col_btn2 = st.columns(2)
-                            with col_btn1:
-                                if st.button("Confirmar", key=f"btn_confirm_{item_id}", type="primary"):
-                                    try:
-                                        supabase.table("agendamentos").update({"status": "Confirmado"}).eq("id", item_id).execute()
+                            st.write(f"**Status:** `{status_atual}`")
+                        with col3:
+                            b1, b2 = st.columns(2)
+                            with b1:
+                                if st.button("Confirmar", key=f"conf_{item_id}", type="primary"):
+                                    if update_status_agendamento(item_id, "Confirmado"):
                                         st.success("Confirmado!")
                                         st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Erro: {e}")
-                            with col_btn2:
-                                if st.button("Cancelar", key=f"btn_cancel_{item_id}"):
-                                    try:
-                                        supabase.table("agendamentos").update({"status": "Cancelado/Recusado"}).eq("id", item_id).execute()
+                            with b2:
+                                if st.button("Cancelar/Recusar", key=f"canc_{item_id}"):
+                                    if update_status_agendamento(item_id, "Cancelado / Recusado"):
                                         st.warning("Cancelado!")
                                         st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Erro: {e}")
