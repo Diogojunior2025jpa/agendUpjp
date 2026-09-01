@@ -45,7 +45,6 @@ def fetch_table(table_name: str) -> list[dict[str, Any]]:
         return []
 
 def insert_estabelecimento(nome: str, categoria: str, chave_pix_raw: str, tipo_chave_pix: str) -> dict[str, Any] | None:
-    # Trata 'chave_pix' para o tipo bigint do Supabase (converte para inteiro se preenchido, ou manda None/NULL se vazio)
     pix_clean = ''.join(filter(str.isdigit, chave_pix_raw)) if chave_pix_raw else ""
     chave_pix_val = int(pix_clean) if pix_clean else None
 
@@ -62,7 +61,11 @@ def insert_estabelecimento(nome: str, categoria: str, chave_pix_raw: str, tipo_c
         if res.data:
             return res.data[0]
     except Exception as e:
-        st.error(f"Erro ao salvar estabelecimento no Supabase: {e}")
+        err_msg = str(e)
+        if "42501" in err_msg or "row-level security" in err_msg:
+            st.error("⚠️ Bloqueio de Segurança (RLS) no Supabase! Desative o RLS ou adicione uma Policy de INSERT para a tabela 'estabelecimentos' no painel do Supabase.")
+        else:
+            st.error(f"Erro ao salvar estabelecimento no Supabase: {e}")
     return None
 
 def insert_agendamento(payload: dict[str, Any]) -> bool:
