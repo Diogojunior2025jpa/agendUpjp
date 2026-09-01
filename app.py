@@ -3,10 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-import requests
 import streamlit as st
-
-from supabase_client import SupabaseClient, SupabaseConnectorError
+from supabase import create_client, Client
 
 
 st.set_page_config(
@@ -15,6 +13,15 @@ st.set_page_config(
     layout="wide",
 )
 
+# Credenciais do Supabase
+SUPABASE_URL = "https://aphyrkigrszverlsainz.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFwaHlya2lncnN6dmVybHNhaW56Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxODMxODYsImV4cCI6MjEwMzc1OTE4Nn0.rsYGRDdyuoMpH-aFLAgG2NF5GJtOltEIu4ANLhaDa60"
+
+@st.cache_resource
+def get_supabase_client() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+client = get_supabase_client()
 
 ID_COLUMN = "id"
 STATUS_PENDING = {"pendente", "pending", "aguardando", "aguardando pagamento"}
@@ -76,11 +83,16 @@ def appointment_title(row: dict[str, Any], row_number: int) -> str:
     return f"Agendamento #{row_number}"
 
 
-def render_appointment(
-    row: dict[str, Any],
-    row_number: int,
-    client: SupabaseClient,
-) -> None:
+def confirm_pix_action(row_id: Any) -> None:
+    try:
+        client.table("agendamentos").update({"status": "Confirmado"}).eq(ID_COLUMN, row_id).execute()
+        st.success("PIX confirmado com sucesso!")
+        st.rerun()
+    except Exception as error:
+        st.error(f"Erro ao confirmar PIX: {error}")
+
+
+def render_appointment(row: dict[str, Any], row_number: int) -> None:
     status = normalized_status(row) or "Sem status"
     row_id = appointment_id(row)
     pending = is_pending(row)
@@ -132,23 +144,14 @@ def render_appointment(
                     type="primary",
                     use_container_width=True,
                 ):
-                    try:
-                        client.confirm_pix(
-                            id_column=ID_COLUMN,
-                            appointment_id=row_id,
-                            current_status=status,
-                        )
-                    except SupabaseConnectorError as error:
-                        st.error(str(error))
-                    else:
-                        st.success("PIX confirmado.")
-                        st.rerun()
+                    confirm_pix_action(row_id)
             else:
                 st.caption("Sem ação pendente")
 
 
-def load_appointments(client: SupabaseClient) -> list[dict[str, Any]]:
-    return client.list_appointments()
+def load_appointments() -> list[dict[str, Any]]:
+    response = client.table("agendamentos").select("*").execute()
+    return response.data or []
 
 
 st.title("Agendamentos PIX")
@@ -161,10 +164,9 @@ with toolbar_column:
 with note_column:
     st.caption("Os dados são carregados diretamente da tabela `agendamentos`.")
 
-client = SupabaseClient()
 try:
-    appointments = load_appointments(client)
-except (SupabaseConnectorError, requests.exceptions.RequestException) as error:
+    appointments = load_appointments()
+except Exception as error:
     st.error(f"Não foi possível carregar os agendamentos: {error}")
     st.stop()
 
@@ -187,4 +189,4 @@ else:
     st.dataframe(appointments, use_container_width=True, hide_index=True)
     st.subheader("Agendamentos")
     for index, row in enumerate(appointments, start=1):
-        render_appointment(row, index, client)
+        render_appointment(row, index)
