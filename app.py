@@ -15,7 +15,7 @@ st.set_page_config(
 
 
 # =====================================================
-# SUPABASE
+# CONEXÃO SUPABASE
 # =====================================================
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -23,7 +23,7 @@ SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 
 @st.cache_resource
-def conectar():
+def conectar_supabase():
 
     return create_client(
         SUPABASE_URL,
@@ -31,12 +31,25 @@ def conectar():
     )
 
 
-supabase = conectar()
+supabase = conectar_supabase()
 
 
 
 # =====================================================
-# FUNÇÕES
+# SESSÃO
+# =====================================================
+
+if "login" not in st.session_state:
+    st.session_state.login = False
+
+
+if "usuario" not in st.session_state:
+    st.session_state.usuario = None
+
+
+
+# =====================================================
+# FUNÇÕES BANCO
 # =====================================================
 
 
@@ -44,22 +57,24 @@ def buscar(tabela):
 
     try:
 
-        resultado = (
+        resposta = (
             supabase
             .table(tabela)
             .select("*")
             .execute()
         )
 
-        return resultado.data or []
+        return resposta.data or []
 
-    except Exception as e:
+
+    except Exception as erro:
 
         st.error(
-            f"Erro buscando {tabela}: {e}"
+            f"Erro ao consultar {tabela}: {erro}"
         )
 
         return []
+
 
 
 
@@ -67,36 +82,77 @@ def inserir(tabela, dados):
 
     try:
 
-        resultado = (
+        resposta = (
+
             supabase
             .table(tabela)
             .insert(dados)
             .execute()
+
         )
 
-        return resultado.data
+        return resposta.data
 
 
-    except Exception as e:
+    except Exception as erro:
 
         st.error(
-            f"Erro inserindo: {e}"
+            f"Erro ao inserir: {erro}"
         )
 
         return None
 
 
 
-def criar_cliente(nome):
 
-    usuarios = buscar("profiles")
+def atualizar_status(id_agendamento, status):
+
+    try:
+
+        supabase.table(
+
+            "agendamentos"
+
+        ).update(
+
+            {
+                "status": status
+            }
+
+        ).eq(
+
+            "id",
+            id_agendamento
+
+        ).execute()
 
 
-    for u in usuarios:
+        return True
 
-        if u["nome"].lower() == nome.lower():
 
-            return u["id"]
+    except Exception as erro:
+
+        st.error(
+            f"Erro ao atualizar: {erro}"
+        )
+
+        return False
+
+
+
+
+
+def criar_cliente(nome, telefone):
+
+
+    clientes = buscar("profiles")
+
+
+    for cliente in clientes:
+
+        if cliente.get("nome") == nome:
+
+            return cliente["id"]
 
 
 
@@ -105,8 +161,11 @@ def criar_cliente(nome):
         "profiles",
 
         {
+
             "nome": nome,
+
             "tipo": "cliente"
+
         }
 
     )
@@ -121,28 +180,41 @@ def criar_cliente(nome):
 
 
 
-def horario_existe(data_hora, profissional):
+
+def horario_ocupado(data_hora, profissional_id):
 
 
-    dados = (
+    resposta = (
 
         supabase
+
         .table("agendamentos")
+
         .select("*")
+
         .eq(
+
             "profissional_id",
-            profissional
+
+            profissional_id
+
         )
+
         .eq(
+
             "data_hora",
+
             data_hora
+
         )
+
         .execute()
 
     )
 
 
-    return len(dados.data) > 0
+    return len(resposta.data) > 0
+
 
 
 
@@ -157,426 +229,469 @@ st.sidebar.title(
 )
 
 
-opcao = st.sidebar.radio(
 
-    "Navegação",
+menu = st.sidebar.radio(
+
+    "Menu",
 
     [
+
         "📅 Agendar",
+
         "🔐 Login"
+
     ]
 
 )
-
-
-
 # =====================================================
-# CLIENTE
+# ÁREA PÚBLICA — AGENDAMENTO DO CLIENTE
 # =====================================================
 
+if menu == "📅 Agendar":
 
-if opcao == "📅 Agendar":
+    st.title("📅 Agendamento Online")
+    st.write("Escolha o estabelecimento, profissional, serviço, data e horário.")
 
+    # -------------------------------------------------
+    # ESTABELECIMENTOS
+    # -------------------------------------------------
 
-    st.title(
-        "📅 Agendamento Online"
-    )
-
-
-    st.write(
-        "Escolha o local, profissional e serviço."
-    )
-
-
-
-    estabelecimentos = buscar(
-        "estabelecimentos"
-    )
-
-
+    estabelecimentos = buscar("estabelecimentos")
 
     if not estabelecimentos:
-
-        st.warning(
-            "Nenhum estabelecimento cadastrado."
-        )
-
+        st.warning("Nenhum estabelecimento cadastrado no momento.")
         st.stop()
 
+    mapa_estabelecimentos = {}
 
+    for estabelecimento in estabelecimentos:
 
-    empresas = {}
+        nome_estabelecimento = estabelecimento.get(
+            "nome",
+            f"Estabelecimento {estabelecimento.get('id')}"
+        )
 
-    for e in estabelecimentos:
+        categoria = estabelecimento.get("categoria", "")
 
-        empresas[
-            f"{e['nome']} - {e['categoria']}"
-        ] = e
+        rotulo = (
+            f"{nome_estabelecimento} - {categoria}"
+            if categoria
+            else nome_estabelecimento
+        )
 
+        mapa_estabelecimentos[rotulo] = estabelecimento
 
-
-    empresa_nome = st.selectbox(
-
+    estabelecimento_selecionado = st.selectbox(
         "Estabelecimento",
-
-        empresas.keys()
-
+        list(mapa_estabelecimentos.keys())
     )
 
-
-
-    empresa = empresas[empresa_nome]
-
-
-
-    # -------------------------
-    # PROFISSIONAIS
-    # -------------------------
-
-
-    profissionais = []
-
-
-    for p in buscar("profissionais"):
-
-
-        if int(p["estabelecimento_id"]) == int(empresa["id"]):
-
-            profissionais.append(p)
-
-
-
-    if not profissionais:
-
-
-        st.warning(
-
-            "Nenhum profissional cadastrado para este estabelecimento."
-
-        )
-
-        st.stop()
-
-
-
-    profissionais_dict = {
-
-        p["nome"]: p
-
-        for p in profissionais
-
-    }
-
-
-
-    profissional_nome = st.selectbox(
-
-        "Profissional",
-
-        profissionais_dict.keys()
-
-    )
-
-
-
-    profissional = profissionais_dict[
-        profissional_nome
+    empresa = mapa_estabelecimentos[
+        estabelecimento_selecionado
     ]
 
+    empresa_id = empresa.get("id")
 
+    # -------------------------------------------------
+    # PROFISSIONAIS
+    # -------------------------------------------------
 
-    # -------------------------
-    # SERVIÇOS
-    # -------------------------
+    todos_profissionais = buscar("profissionais")
 
+    profissionais_empresa = []
 
-    servicos = []
+    for profissional in todos_profissionais:
 
+        try:
+            if int(profissional.get("estabelecimento_id")) == int(empresa_id):
+                profissionais_empresa.append(profissional)
 
-    for s in buscar("servicos"):
+        except (TypeError, ValueError):
+            continue
 
-
-        if int(s["estabelecimento_id"]) == int(empresa["id"]):
-
-            servicos.append(s)
-
-
-
-    if not servicos:
-
+    if not profissionais_empresa:
 
         st.warning(
+            "Nenhum profissional cadastrado para este estabelecimento."
+        )
 
-            "Nenhum serviço cadastrado."
-
+        st.info(
+            "O administrador precisa cadastrar pelo menos um profissional "
+            "vinculado a este estabelecimento."
         )
 
         st.stop()
 
+    mapa_profissionais = {}
 
+    for profissional in profissionais_empresa:
 
-    servicos_dict = {
+        nome_profissional = profissional.get(
+            "nome",
+            f"Profissional {profissional.get('id')}"
+        )
 
+        especialidade = profissional.get("especialidade")
 
-        s["nome"]: s
+        if especialidade:
+            rotulo_profissional = (
+                f"{nome_profissional} — {especialidade}"
+            )
+        else:
+            rotulo_profissional = nome_profissional
 
-        for s in servicos
+        mapa_profissionais[
+            rotulo_profissional
+        ] = profissional
 
-    }
+    profissional_selecionado = st.selectbox(
+        "Profissional",
+        list(mapa_profissionais.keys())
+    )
 
+    profissional = mapa_profissionais[
+        profissional_selecionado
+    ]
 
+    profissional_id = profissional.get("id")
 
-    servico_nome = st.selectbox(
+    # -------------------------------------------------
+    # SERVIÇOS
+    # -------------------------------------------------
 
+    todos_servicos = buscar("servicos")
+
+    servicos_empresa = []
+
+    for servico_item in todos_servicos:
+
+        try:
+            if int(servico_item.get("estabelecimento_id")) == int(empresa_id):
+                servicos_empresa.append(servico_item)
+
+        except (TypeError, ValueError):
+            continue
+
+    if not servicos_empresa:
+
+        st.warning(
+            "Nenhum serviço cadastrado para este estabelecimento."
+        )
+
+        st.info(
+            "O administrador precisa cadastrar pelo menos um serviço."
+        )
+
+        st.stop()
+
+    mapa_servicos = {}
+
+    for servico_item in servicos_empresa:
+
+        nome_servico = servico_item.get(
+            "nome",
+            f"Serviço {servico_item.get('id')}"
+        )
+
+        preco_servico = servico_item.get("preco", 0)
+
+        try:
+            preco_formatado = float(preco_servico)
+        except (TypeError, ValueError):
+            preco_formatado = 0.0
+
+        rotulo_servico = (
+            f"{nome_servico} — R$ {preco_formatado:.2f}"
+        )
+
+        mapa_servicos[rotulo_servico] = servico_item
+
+    servico_selecionado = st.selectbox(
         "Serviço",
-
-        servicos_dict.keys()
-
+        list(mapa_servicos.keys())
     )
 
+    servico = mapa_servicos[
+        servico_selecionado
+    ]
 
-    servico = servicos_dict[servico_nome]
+    servico_id = servico.get("id")
 
+    preco = servico.get("preco", 0)
+    duracao = servico.get("duracao_minutos", 30)
 
+    try:
+        preco = float(preco)
+    except (TypeError, ValueError):
+        preco = 0.0
 
-    st.info(
+    try:
+        duracao = int(duracao)
+    except (TypeError, ValueError):
+        duracao = 30
 
-        f"Valor: R$ {servico['preco']}"
+    col_info1, col_info2 = st.columns(2)
 
-    )
+    with col_info1:
+        st.info(
+            f"💰 Valor: R$ {preco:.2f}"
+        )
 
-
+    with col_info2:
+        st.info(
+            f"⏱️ Duração: {duracao} minutos"
+        )
 
     st.divider()
 
+    # -------------------------------------------------
+    # DADOS DO CLIENTE
+    # -------------------------------------------------
 
+    st.subheader("Seus dados")
 
-    nome = st.text_input(
-
-        "Nome completo"
-
+    nome_cliente = st.text_input(
+        "Nome completo",
+        key="cliente_nome"
     )
 
-
-    telefone = st.text_input(
-
-        "WhatsApp"
-
+    telefone_cliente = st.text_input(
+        "WhatsApp com DDD",
+        placeholder="Ex.: 83999999999",
+        key="cliente_whatsapp"
     )
 
+    # -------------------------------------------------
+    # DATA E HORÁRIO
+    # -------------------------------------------------
 
+    st.subheader("Data e horário")
 
-    c1,c2 = st.columns(2)
+    coluna_data, coluna_hora = st.columns(2)
 
+    with coluna_data:
 
-
-    with c1:
-
-        data = st.date_input(
-
+        data_agendamento = st.date_input(
             "Data",
-
-            date.today()
-
+            value=date.today(),
+            min_value=date.today(),
+            key="data_agendamento"
         )
 
+    with coluna_hora:
 
-
-    with c2:
-
-        hora = st.time_input(
-
+        hora_agendamento = st.time_input(
             "Horário",
-
-            time(8,0)
-
+            value=time(8, 0),
+            step=900,
+            key="hora_agendamento"
         )
 
+    # -------------------------------------------------
+    # RESUMO
+    # -------------------------------------------------
 
+    st.divider()
 
+    st.subheader("Resumo do agendamento")
+
+    st.write(
+        f"**Estabelecimento:** {empresa.get('nome', '-')}"
+    )
+
+    st.write(
+        f"**Profissional:** {profissional.get('nome', '-')}"
+    )
+
+    st.write(
+        f"**Serviço:** {servico.get('nome', '-')}"
+    )
+
+    st.write(
+        f"**Valor:** R$ {preco:.2f}"
+    )
+
+    st.write(
+        f"**Data:** {data_agendamento.strftime('%d/%m/%Y')}"
+    )
+
+    st.write(
+        f"**Horário:** {hora_agendamento.strftime('%H:%M')}"
+    )
+
+    # -------------------------------------------------
+    # CONFIRMAR AGENDAMENTO
+    # -------------------------------------------------
 
     if st.button(
-
-        "Confirmar Agendamento",
-
-        type="primary"
-
+        "✅ Confirmar Agendamento",
+        type="primary",
+        use_container_width=True
     ):
 
+        nome_limpo = nome_cliente.strip()
+        telefone_limpo = telefone_cliente.strip()
 
-        if not nome or not telefone:
-
+        if not nome_limpo:
 
             st.error(
-
-                "Informe nome e telefone."
-
+                "Informe o seu nome."
             )
 
+        elif not telefone_limpo:
+
+            st.error(
+                "Informe o seu WhatsApp."
+            )
+
+        elif len(
+            "".join(
+                caractere
+                for caractere in telefone_limpo
+                if caractere.isdigit()
+            )
+        ) < 10:
+
+            st.error(
+                "Informe um número de WhatsApp válido com DDD."
+            )
 
         else:
 
-
-            data_hora = (
-
-                f"{data}T{hora}"
-
+            data_hora_objeto = datetime.combine(
+                data_agendamento,
+                hora_agendamento
             )
 
+            data_hora_iso = data_hora_objeto.isoformat()
 
+            try:
 
-            if horario_existe(
-
-                data_hora,
-
-                profissional["id"]
-
-            ):
-
-
-                st.error(
-
-                    "Horário já ocupado."
-
+                ocupado = horario_ocupado(
+                    data_hora_iso,
+                    profissional_id
                 )
 
+            except Exception as erro:
+
+                st.error(
+                    f"Não foi possível verificar o horário: {erro}"
+                )
+
+                ocupado = True
+
+            if ocupado:
+
+                st.error(
+                    "❌ Este profissional já possui um "
+                    "agendamento neste horário."
+                )
 
             else:
 
-
                 cliente_id = criar_cliente(
-
-                    nome
-
+                    nome_limpo,
+                    telefone_limpo
                 )
 
+                if not cliente_id:
 
-
-                novo_agendamento = {
-
-
-                    "cliente_id":
-
-                    cliente_id,
-
-
-                    "profissional_id":
-
-                    profissional["id"],
-
-
-                    "servico_id":
-
-                    servico["id"],
-
-
-                    "data_hora":
-
-                    data_hora,
-
-
-                    "status":
-
-                    "pendente"
-
-                }
-
-
-
-                resultado = inserir(
-
-                    "agendamentos",
-
-                    novo_agendamento
-
-                )
-
-
-
-                if resultado:
-
-
-                    st.success(
-
-                        "✅ Agendamento realizado com sucesso!"
-
+                    st.error(
+                        "Não foi possível cadastrar ou localizar o cliente."
                     )
+
+                else:
+
+                    novo_agendamento = {
+                        "cliente_id": cliente_id,
+                        "profissional_id": profissional_id,
+                        "servico_id": servico_id,
+                        "data_hora": data_hora_iso,
+                        "status": "pendente"
+                    }
+
+                    resultado = inserir(
+                        "agendamentos",
+                        novo_agendamento
+                    )
+
+                    if resultado:
+
+                        st.success(
+                            "🎉 Agendamento realizado com sucesso!"
+                        )
+
+                        st.write(
+                            "Seu agendamento ficará como **pendente** "
+                            "até ser confirmado pelo estabelecimento."
+                        )
+
+                        if empresa.get("chave_pix"):
+
+                            st.info(
+                                f"💳 Chave PIX do estabelecimento: "
+                                f"{empresa.get('chave_pix')}"
+                            )
+
+                        st.balloons()
+
+
 # =====================================================
 # LOGIN ADMINISTRATIVO
 # =====================================================
 
+elif menu == "🔐 Login":
 
-if opcao == "🔐 Login":
+    st.title("🔐 Área Administrativa")
 
-
-    st.title(
-        "🔐 Área Administrativa"
+    st.write(
+        "Entre para administrar estabelecimentos, "
+        "profissionais, serviços e agendamentos."
     )
 
-
-    email = st.text_input(
-        "E-mail"
+    email_admin = st.text_input(
+        "E-mail",
+        key="login_email"
     )
 
-
-    senha = st.text_input(
+    senha_admin = st.text_input(
         "Senha",
-        type="password"
+        type="password",
+        key="login_senha"
     )
-
-
 
     if st.button(
-        "Entrar"
+        "Entrar",
+        type="primary",
+        use_container_width=True
     ):
 
+        email_normalizado = email_admin.strip().lower()
 
-        usuarios_validos = {
-
-
-            "admin@agendup.com":
-
-            "123456",
-
-
-            "adm@gmail.com":
-
-            "123456"
-
+        usuarios_admin = {
+            "admin@agendup.com": "123456",
+            "adm@gmail.com": "123456"
         }
 
+        if (
+            email_normalizado in usuarios_admin
+            and senha_admin == usuarios_admin[email_normalizado]
+        ):
 
-
-        if email in usuarios_validos and senha == usuarios_validos[email]:
-
-
-            st.session_state["login"] = True
-
-            st.session_state["usuario"] = email
-
+            st.session_state.login = True
+            st.session_state.usuario = email_normalizado
 
             st.success(
-                "Login realizado!"
+                "Login realizado com sucesso."
             )
-
 
             st.rerun()
 
-
-
         else:
 
-
             st.error(
-
-                "Usuário ou senha inválidos."
-
+                "E-mail ou senha inválidos."
             )
-
-
-
-
-
 # =====================================================
 # PAINEL ADMINISTRATIVO
 # =====================================================
@@ -585,23 +700,18 @@ if opcao == "🔐 Login":
 if st.session_state.get("login"):
 
 
+    st.sidebar.divider()
+
     st.sidebar.success(
-
-        f"Logado: {st.session_state.usuario}"
-
+        f"Usuário: {st.session_state.usuario}"
     )
 
 
-
     if st.sidebar.button(
-
-        "Sair"
-
+        "🚪 Sair"
     ):
 
-
         st.session_state.login = False
-
         st.session_state.usuario = None
 
         st.rerun()
@@ -609,14 +719,12 @@ if st.session_state.get("login"):
 
 
     st.title(
-
-        "⚡ Painel AgendUp"
-
+        "⚡ Painel Administrativo AgendUp"
     )
 
 
 
-    aba1, aba2 = st.tabs(
+    aba_agenda, aba_indicadores = st.tabs(
 
         [
 
@@ -635,263 +743,271 @@ if st.session_state.get("login"):
 # =====================================================
 
 
-    with aba1:
+    with aba_agenda:
 
 
         st.subheader(
-
-            "Agendamentos realizados"
-
+            "Agendamentos"
         )
-
 
 
         agendamentos = buscar(
-
             "agendamentos"
-
         )
-
-
-
-        profissionais = buscar(
-
-            "profissionais"
-
-        )
-
-
-        servicos = buscar(
-
-            "servicos"
-
-        )
-
-
-        clientes = buscar(
-
-            "profiles"
-
-        )
-
 
 
         if not agendamentos:
 
 
             st.info(
-
                 "Nenhum agendamento encontrado."
-
             )
-
 
 
         else:
 
 
+            clientes = buscar(
+                "profiles"
+            )
 
-            for ag in agendamentos:
+
+            profissionais = buscar(
+                "profissionais"
+            )
 
 
-
-                profissional = next(
-
-                    (
-
-                        p for p in profissionais
-
-                        if int(p["id"]) == int(ag["profissional_id"])
-
-                    ),
-
-                    None
-
-                )
+            servicos = buscar(
+                "servicos"
+            )
 
 
 
-                servico = next(
+            for agendamento in agendamentos:
 
-                    (
 
-                        s for s in servicos
+                cliente = None
 
-                        if int(s["id"]) == int(ag["servico_id"])
+                profissional = None
 
-                    ),
-
-                    None
-
-                )
+                servico = None
 
 
 
-                cliente = next(
+                for c in clientes:
 
-                    (
+                    if str(c.get("id")) == str(
+                        agendamento.get("cliente_id")
+                    ):
 
-                        c for c in clientes
+                        cliente = c
 
-                        if c["id"] == ag["cliente_id"]
-
-                    ),
-
-                    None
-
-                )
+                        break
 
 
 
-                with st.container(border=True):
+                for p in profissionais:
+
+                    if int(p.get("id")) == int(
+                        agendamento.get("profissional_id")
+                    ):
+
+                        profissional = p
+
+                        break
+
+
+
+                for s in servicos:
+
+                    if int(s.get("id")) == int(
+                        agendamento.get("servico_id")
+                    ):
+
+                        servico = s
+
+                        break
+
+
+
+                with st.container(
+                    border=True
+                ):
+
 
 
                     st.markdown(
 
-                        f"""
+f"""
+## 📅 Atendimento
 
-### 📅 Atendimento
+👤 **Cliente:**  
+{cliente.get('nome') if cliente else 'Não identificado'}
 
+📱 **Telefone:**  
+{cliente.get('telefone') if cliente and cliente.get('telefone') else 'Não informado'}
 
-**Cliente:**
+✂️ **Profissional:**  
+{profissional.get('nome') if profissional else 'Não encontrado'}
 
-{cliente['nome'] if cliente else 'Não identificado'}
+💼 **Serviço:**  
+{servico.get('nome') if servico else 'Não encontrado'}
 
+🕒 **Data/Hora:**  
+{agendamento.get('data_hora')}
 
-
-**Profissional:**
-
-{profissional['nome'] if profissional else 'Não encontrado'}
-
-
-
-**Serviço:**
-
-{servico['nome'] if servico else 'Não encontrado'}
-
-
-
-**Data/Hora:**
-
-{ag['data_hora']}
-
-
-
-**Status:**
-
-{ag['status']}
-
+📌 **Status atual:**  
+`{agendamento.get('status')}`
 """
-
                     )
 
 
 
-                    c1,c2 = st.columns(2)
+                    col1, col2 = st.columns(2)
 
 
 
-                    with c1:
+                    with col1:
 
 
                         if st.button(
 
                             "✅ Confirmar",
 
-                            key=f"confirma_{ag['id']}"
+                            key=f"confirmar_{agendamento['id']}",
+
+                            use_container_width=True
 
                         ):
 
 
+                            try:
 
-                            (
 
-                                supabase
+                                resposta = (
 
-                                .table("agendamentos")
+                                    supabase
 
-                                .update({
+                                    .table(
+                                        "agendamentos"
+                                    )
 
-                                    "status":
+                                    .update(
 
-                                    "confirmado"
+                                        {
+                                            "status":
+                                            "confirmado"
+                                        }
 
-                                })
+                                    )
 
-                                .eq(
+                                    .eq(
 
-                                    "id",
+                                        "id",
 
-                                    ag["id"]
+                                        agendamento["id"]
+
+                                    )
+
+                                    .execute()
 
                                 )
 
-                                .execute()
 
-                            )
-
-
-                            st.success(
-
-                                "Agendamento confirmado."
-
-                            )
+                                st.success(
+                                    "Agendamento confirmado!"
+                                )
 
 
-                            st.rerun()
+                                st.rerun()
 
 
 
-                    with c2:
+                            except Exception as erro:
+
+
+                                st.error(
+
+                                    "Erro ao confirmar:"
+                                )
+
+
+                                st.code(
+                                    str(erro)
+                                )
+
+
+
+
+
+                    with col2:
 
 
                         if st.button(
 
                             "❌ Cancelar",
 
-                            key=f"cancela_{ag['id']}"
+                            key=f"cancelar_{agendamento['id']}",
+
+                            use_container_width=True
 
                         ):
 
 
+                            try:
 
-                            (
 
-                                supabase
+                                resposta = (
 
-                                .table("agendamentos")
+                                    supabase
 
-                                .update({
+                                    .table(
+                                        "agendamentos"
+                                    )
 
-                                    "status":
+                                    .update(
 
-                                    "cancelado"
+                                        {
+                                            "status":
+                                            "cancelado"
+                                        }
 
-                                })
+                                    )
 
-                                .eq(
+                                    .eq(
 
-                                    "id",
+                                        "id",
 
-                                    ag["id"]
+                                        agendamento["id"]
+
+                                    )
+
+                                    .execute()
 
                                 )
 
-                                .execute()
 
-                            )
-
-
-                            st.warning(
-
-                                "Agendamento cancelado."
-
-                            )
+                                st.warning(
+                                    "Agendamento cancelado!"
+                                )
 
 
-                            st.rerun()
+                                st.rerun()
 
 
+
+                            except Exception as erro:
+
+
+                                st.error(
+
+                                    "Erro ao cancelar:"
+                                )
+
+
+                                st.code(
+                                    str(erro)
+                                )
 
 
 
@@ -900,64 +1016,60 @@ if st.session_state.get("login"):
 # =====================================================
 
 
-    with aba2:
+    with aba_indicadores:
 
 
         st.subheader(
-
-            "Indicadores"
-
+            "📊 Indicadores"
         )
 
+
+        todos = buscar(
+            "agendamentos"
+        )
 
 
         total = len(
-
-            buscar(
-
-                "agendamentos"
-
-            )
-
+            todos
         )
-
 
 
         confirmados = len(
 
             [
 
-                x for x in buscar("agendamentos")
+                a for a in todos
 
-                if x["status"] == "confirmado"
+                if a.get("status")
+                == "confirmado"
 
             ]
 
         )
-
 
 
         pendentes = len(
 
             [
 
-                x for x in buscar("agendamentos")
+                a for a in todos
 
-                if x["status"] == "pendente"
+                if a.get("status")
+                == "pendente"
 
             ]
 
         )
 
 
-
         cancelados = len(
 
             [
 
-                x for x in buscar("agendamentos")
+                a for a in todos
 
-                if x["status"] == "cancelado"
+                if a.get("status")
+                == "cancelado"
 
             ]
 
@@ -970,38 +1082,26 @@ if st.session_state.get("login"):
 
 
         c1.metric(
-
             "Total",
-
             total
-
         )
 
 
         c2.metric(
-
             "Confirmados",
-
             confirmados
-
         )
 
 
         c3.metric(
-
             "Pendentes",
-
             pendentes
-
         )
 
 
         c4.metric(
-
             "Cancelados",
-
             cancelados
-
         )
 # =====================================================
 # CADASTROS ADMINISTRATIVOS
@@ -1013,13 +1113,12 @@ if st.session_state.get("login"):
 
     st.divider()
 
-
     st.header(
-        "⚙️ Cadastros do Sistema"
+        "⚙️ Administração do AgendUp"
     )
 
 
-    aba_empresa, aba_profissional, aba_servico = st.tabs(
+    aba_empresa, aba_profissional, aba_servico, aba_dashboard = st.tabs(
 
         [
 
@@ -1027,7 +1126,9 @@ if st.session_state.get("login"):
 
             "👨‍💼 Profissionais",
 
-            "💼 Serviços"
+            "💼 Serviços",
+
+            "📊 Dashboard"
 
         ]
 
@@ -1044,41 +1145,35 @@ if st.session_state.get("login"):
 
 
         st.subheader(
-
             "Cadastrar estabelecimento"
-
         )
 
 
         with st.form(
-
-            "form_empresa"
-
+            "cadastro_empresa"
         ):
 
 
             nome_empresa = st.text_input(
-
-                "Nome"
-
+                "Nome do estabelecimento"
             )
 
 
-            categoria_empresa = st.selectbox(
+            categoria = st.selectbox(
 
                 "Categoria",
 
                 [
 
-                    "barbearia",
+                    "Barbearia",
 
-                    "odontologia",
+                    "Odontologia",
 
-                    "estetica",
+                    "Estética",
 
-                    "consultorio",
+                    "Consultório",
 
-                    "outros"
+                    "Outros"
 
                 ]
 
@@ -1086,17 +1181,12 @@ if st.session_state.get("login"):
 
 
             chave_pix = st.text_input(
-
                 "Chave PIX"
-
             )
 
 
-
             salvar_empresa = st.form_submit_button(
-
-                "Salvar"
-
+                "Cadastrar empresa"
             )
 
 
@@ -1104,28 +1194,23 @@ if st.session_state.get("login"):
             if salvar_empresa:
 
 
-
-                dados = {
+                dados_empresa = {
 
 
                     "nome":
-
                     nome_empresa,
 
 
                     "categoria":
-
-                    categoria_empresa,
+                    categoria,
 
 
                     "chave_pix":
-
                     chave_pix,
 
 
                     "tipo_chave_pix":
-
-                    "telefone"
+                    "pix"
 
                 }
 
@@ -1135,7 +1220,7 @@ if st.session_state.get("login"):
 
                     "estabelecimentos",
 
-                    dados
+                    dados_empresa
 
                 )
 
@@ -1145,9 +1230,7 @@ if st.session_state.get("login"):
 
 
                     st.success(
-
-                        "Empresa cadastrada com sucesso!"
-
+                        "Empresa cadastrada!"
                     )
 
 
@@ -1158,17 +1241,12 @@ if st.session_state.get("login"):
 
 
         st.subheader(
-
-            "Empresas cadastradas"
-
+            "Empresas existentes"
         )
 
 
-
         empresas = buscar(
-
             "estabelecimentos"
-
         )
 
 
@@ -1193,29 +1271,22 @@ if st.session_state.get("login"):
 
 
         st.subheader(
-
             "Cadastrar profissional"
-
         )
-
 
 
         empresas = buscar(
-
             "estabelecimentos"
-
         )
-
 
 
         if empresas:
 
 
-            mapa_empresas = {
+            lista_empresas = {
 
 
                 e["nome"]:
-
                 e["id"]
 
 
@@ -1227,20 +1298,17 @@ if st.session_state.get("login"):
 
             empresa_nome = st.selectbox(
 
-                "Estabelecimento",
+                "Empresa",
 
-                mapa_empresas.keys(),
+                lista_empresas.keys(),
 
-                key="empresa_profissional"
+                key="empresa_prof"
 
             )
 
 
-
-            empresa_id = mapa_empresas[
-
+            empresa_id = lista_empresas[
                 empresa_nome
-
             ]
 
 
@@ -1265,7 +1333,6 @@ if st.session_state.get("login"):
                 "Cadastrar profissional"
 
             ):
-
 
 
                 dados = {
@@ -1349,15 +1416,14 @@ if st.session_state.get("login"):
         )
 
 
-
         if empresas:
 
 
-            mapa_empresas = {
+
+            lista_empresas = {
 
 
                 e["nome"]:
-
                 e["id"]
 
 
@@ -1369,27 +1435,24 @@ if st.session_state.get("login"):
 
             empresa_nome = st.selectbox(
 
-                "Estabelecimento",
+                "Empresa",
 
-                mapa_empresas.keys(),
+                lista_empresas.keys(),
 
-                key="empresa_servico"
+                key="empresa_serv"
 
             )
 
 
-
-            empresa_id = mapa_empresas[
-
+            empresa_id = lista_empresas[
                 empresa_nome
-
             ]
 
 
 
             nome_servico = st.text_input(
 
-                "Nome serviço"
+                "Nome do serviço"
 
             )
 
@@ -1398,14 +1461,18 @@ if st.session_state.get("login"):
 
                 "Preço",
 
-                min_value=0.0
+                min_value=0.0,
+
+                step=0.50,
+
+                format="%.2f"
 
             )
 
 
             duracao = st.number_input(
 
-                "Duração (minutos)",
+                "Duração em minutos",
 
                 min_value=5,
 
@@ -1420,7 +1487,6 @@ if st.session_state.get("login"):
                 "Cadastrar serviço"
 
             ):
-
 
 
                 dados = {
@@ -1481,259 +1547,129 @@ if st.session_state.get("login"):
                 "Cadastre uma empresa primeiro."
 
             )
+
+
+
+
+
 # =====================================================
-# DASHBOARD GERAL
+# DASHBOARD
 # =====================================================
 
 
-if st.session_state.get("login"):
+    with aba_dashboard:
 
 
-    st.divider()
+        st.subheader(
 
-
-    st.header(
-        "📊 Dashboard AgendUp"
-    )
-
-
-
-    empresas = buscar(
-
-        "estabelecimentos"
-
-    )
-
-
-    profissionais = buscar(
-
-        "profissionais"
-
-    )
-
-
-    servicos = buscar(
-
-        "servicos"
-
-    )
-
-
-    agendamentos = buscar(
-
-        "agendamentos"
-
-    )
-
-
-
-    # -----------------------------
-    # MÉTRICAS
-    # -----------------------------
-
-
-    col1,col2,col3,col4 = st.columns(4)
-
-
-
-    with col1:
-
-        st.metric(
-
-            "🏢 Empresas",
-
-            len(empresas)
+            "📊 Visão geral do sistema"
 
         )
 
 
 
-    with col2:
+        total_empresas = len(
 
-        st.metric(
+            buscar(
 
-            "👨‍💼 Profissionais",
+                "estabelecimentos"
 
-            len(profissionais)
+            )
+
+        )
+
+
+        total_profissionais = len(
+
+            buscar(
+
+                "profissionais"
+
+            )
+
+        )
+
+
+        total_servicos = len(
+
+            buscar(
+
+                "servicos"
+
+            )
+
+        )
+
+
+        total_agendamentos = len(
+
+            buscar(
+
+                "agendamentos"
+
+            )
 
         )
 
 
 
-    with col3:
-
-        st.metric(
-
-            "💼 Serviços",
-
-            len(servicos)
-
-        )
+        c1,c2,c3,c4 = st.columns(4)
 
 
 
-    with col4:
+        c1.metric(
 
-        st.metric(
+            "Empresas",
 
-            "📅 Agendamentos",
-
-            len(agendamentos)
+            total_empresas
 
         )
 
 
+        c2.metric(
 
-    st.divider()
+            "Profissionais",
 
+            total_profissionais
 
+        )
 
-    # -----------------------------
-    # FATURAMENTO ESTIMADO
-    # -----------------------------
 
+        c3.metric(
 
-    faturamento = 0
+            "Serviços",
 
+            total_servicos
 
-    for ag in agendamentos:
+        )
 
 
-        if ag.get("status") == "confirmado":
+        c4.metric(
 
+            "Agendamentos",
 
-            servico = next(
+            total_agendamentos
 
-                (
+        )
 
-                    s for s in servicos
 
-                    if int(s["id"]) == int(ag["servico_id"])
-
-                ),
-
-                None
-
-            )
-
-
-            if servico:
-
-
-                faturamento += float(
-
-                    servico.get(
-
-                        "preco",
-
-                        0
-
-                    )
-
-                )
-
-
-
-    st.subheader(
-
-        "💰 Faturamento estimado"
-
-    )
-
-
-    st.metric(
-
-        "Confirmados",
-
-        f"R$ {faturamento:.2f}"
-
-    )
-
-
-
-    st.divider()
-
-
-
-    # -----------------------------
-    # ÚLTIMOS AGENDAMENTOS
-    # -----------------------------
-
-
-    st.subheader(
-
-        "📅 Últimos agendamentos"
-
-    )
-
-
-
-    if agendamentos:
-
-
-        for ag in agendamentos[-10:]:
-
-
-
-            cliente = next(
-
-                (
-
-                    c for c in buscar("profiles")
-
-                    if c["id"] == ag["cliente_id"]
-
-                ),
-
-                None
-
-            )
-
-
-
-            servico = next(
-
-                (
-
-                    s for s in servicos
-
-                    if int(s["id"]) == int(ag["servico_id"])
-
-                ),
-
-                None
-
-            )
-
-
-
-            st.write(
-
-                f"""
-
-**Cliente:** {cliente['nome'] if cliente else 'N/A'}
-
-  
-**Serviço:** {servico['nome'] if servico else 'N/A'}
-
-  
-**Data:** {ag['data_hora']}
-
-  
-**Status:** {ag['status']}
-
----
-
-"""
-
-            )
-
-
-    else:
+        st.divider()
 
 
         st.info(
 
-            "Ainda não existem agendamentos."
+            """
+            Próximas evoluções:
 
+            ✅ WhatsApp automático
+
+            ✅ Login individual por empresa
+
+            ✅ Calendário visual
+
+            ✅ Pagamento PIX integrado
+
+            ✅ Planos de assinatura SaaS
+
+            """
         )
